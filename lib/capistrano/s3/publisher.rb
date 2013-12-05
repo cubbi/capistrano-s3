@@ -1,10 +1,14 @@
 require 'aws/s3'
 require 'mime/types'
 require 'fileutils'
+require 'zlib'
+require 'stringio'
 
 module Capistrano::S3::Publisher
 
   LAST_PUBLISHED_FILE = '.last_published'
+
+  GZIPABLE = %w[text/css text/html application/javascript] 
 
   def self.publish!(s3_endpoint, key, secret, bucket, source, extra_options)
     s3 = self.establish_s3_client_connection!(s3_endpoint, key, secret)
@@ -19,7 +23,6 @@ module Capistrano::S3::Publisher
         self.put_object(s3, bucket, path, file, extra_options)
       end
     end
-
     FileUtils.touch(LAST_PUBLISHED_FILE)
   end
 
@@ -72,7 +75,21 @@ module Capistrano::S3::Publisher
         :acl => :public_read,
       }
 
-      options.merge!(self.build_content_type_hash(file))
+      content_type = self.build_content_type_hash(file)
+
+      if GZIPABLE.include?(content_type[:content_type])  
+
+        gzipedFile = StringIO.new("")
+        compressor = Zlib::GzipWriter.new(gzipedFile)
+        compressor.write (options[:data]).read
+        compressor.close
+        
+        memoryFile = StringIO.new gzipedFile.string
+        options.merge!({:data => memoryFile})     
+        options.merge!({:content_encoding => "gzip"})         
+      end
+      
+      options.merge!(content_type)
       options.merge!(self.build_redirect_hash(path, extra_options[:redirect]))
       options.merge!(extra_options[:write]) if extra_options[:write]
 
