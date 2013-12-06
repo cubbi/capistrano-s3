@@ -12,20 +12,39 @@ module Capistrano
 
       GZIPABLE = %w[text/css text/html application/javascript] 
 
-      def self.publish!(s3_endpoint, key, secret, bucket, source, extra_options)
+      def self.publish!(s3_endpoint, key, secret, bucket, source, cloudfront, extra_options)
         s3 = self.establish_s3_client_connection!(s3_endpoint, key, secret)
-
+        
+        published = []
+        
         self.files(source).each do |file|
           if !File.directory?(file)
             next if self.published?(file)
 
             path = self.base_file_path(source, file)
             path.gsub!(/^\//, "") # Remove preceding slash for S3
-
             self.put_object(s3, bucket, path, file, extra_options)
+            
+            published << "/#{path}" # Asume that file was uploaded, add it to published list            
           end
         end
         FileUtils.touch(LAST_PUBLISHED_FILE)
+        
+        unless cloudfront.empty?
+          cf = self.establish_cloudfront_client_connection!(key, secret)          
+
+          options = {
+            :distribution_id => cloudfront,
+            :invalidation_batch => { :caller_reference => "#{cloudfront}-capistrano-s3-#{Time.now.to_i}" }
+          }
+
+          paths = { :quantity => published.count, :items => published}          
+          options[:invalidation_batch].merge!(:paths => paths)
+          puts options
+
+          cf.client.create_invalidation(options)          
+        end
+                
       end
 
       def self.clear!(s3_endpoint, key, secret, bucket)
@@ -50,6 +69,13 @@ module Capistrano
 
       def self.establish_s3_client_connection!(s3_endpoint, key, secret)
         self.establish_connection!(AWS::S3::Client, s3_endpoint, key, secret)
+      end
+
+      def self.establish_cloudfront_client_connection!(key, secret)
+        AWS::CloudFront.new(
+          :access_key_id => key,
+          :secret_access_key => secret
+        )
       end
 
       def self.establish_s3_connection!(s3_endpoint, key, secret)
